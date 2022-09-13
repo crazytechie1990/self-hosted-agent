@@ -1,0 +1,96 @@
+name: $(TeamProject)_$(Build.DefinitionName)_$(SourceBranchName)_$(Date:ddMMyyyy).$(Rev:r) 
+
+trigger: none
+  # branches:
+  #   include:
+  #   - main
+  # paths:
+  #   include:
+  #   - app/stacks
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+resources:
+  repositories:
+  - repository: self
+  - repository: azdo-templates
+    type: git
+    name: SharedInfra/azdo-templates
+  - repository: azdo_pipeline_templates
+    type: git
+    name: SharedInfra/azdo_pipeline_templates
+    ref: refs/heads/sgs-ims/743879
+
+variables:
+      - group: self-hosted-agent-infra-preprod
+      - group: self-hosted-agent-infra-prod
+      - name: VAR_AZP_AGENT_NAME
+        value: dt-$(Build.BuildId)
+      - name: System.debug
+        value: false # debug
+      - name: AzureRegion
+        value: 'westeurope'
+
+
+parameters:
+  - name: ENVIRONMENTS
+    type: object
+    default:
+      # - environment: 'dev'
+      - environment: 'preprod'
+      - environment: 'prod'
+      
+      
+stages:
+############################
+###Provision Build Agent  ##
+############################
+  - ${{ each item in parameters.ENVIRONMENTS }}:
+    - stage: create_agent_${{ item.environment }}
+      displayName: create_agent_${{ item.environment }}
+      variables: 
+          - group: self-hosted-agent-infra-${{ item.environment }}
+      pool:
+        vmImage: ubuntu-latest
+      jobs:
+        - job: deploy
+          displayName: deploy_aci
+          steps:
+            - template: self-host_agent/azr/shaazr_pipetemplate.yml@azdo_pipeline_templates
+              parameters:
+                deploy_agent: true
+                srvconnection: AMSAnywhereHub${{ item.environment }}
+                aci_resource_group: $(AZP_AZURE_ACI_RG)
+                aci_vnet: $(AZP_AZURE_ACI_VNET)
+                aci_subnet: $(AZP_AZURE_ACI_SUBNET)
+                aci_docker_image: $(AZP_AZURE_ACI_AZDO_IMAGE)
+                aci_registry_user: $(ACI_USER)
+                aci_registry_pass: $(ACI_PASS)
+                azp_url: $(AZP_URL)
+                azp_pool: $(AZP_POOL)
+                azp_agent_name: $(VAR_AZP_AGENT_NAME)
+                AZP_TOKEN: '$(AZP_TOKEN1)'
+                
+#########################
+##Destroy Build Agent  ##
+#########################
+    - stage: destroy_agent_${{ item.environment }}
+      condition: succeededOrFailed()
+      displayName: destroy_agent_${{ item.environment }}
+      variables: 
+          - group: self-hosted-agent-infra-${{ item.environment }}
+      pool:
+        vmImage: ubuntu-latest
+      jobs:
+        - job: deploy
+          displayName: Destroy Self-Hosted Agent
+          steps:
+            - template: self-host_agent/azr/shaazr_pipetemplate.yml@azdo_pipeline_templates
+              parameters:
+                destroy_agent: true
+                srvconnection: AMSAnywhereHub${{ item.environment }}
+                aci_resource_group: $(AZP_AZURE_ACI_RG)
+                azp_agent_name: $(VAR_AZP_AGENT_NAME)
+                azp_url: $(AZP_URL)
+                azp_pool: '$(AZP_POOL)'
