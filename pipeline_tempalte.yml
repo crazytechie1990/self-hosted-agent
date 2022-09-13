@@ -1,0 +1,233 @@
+ Azure Devops Pipeline Template - Azure Devops Self-Hosted Agent for Microsoft Azure
+
+parameters:
+  deploy_agent: false                                                         # Deploy the AzDO Self Hosted Agent if set to true (default - false)
+  destroy_agent: false                                                        # Destroy the AzDO Self Hosted Agent if set to true (default - false)
+  srvconnection: ""                                                           # Azure DevOps Service Connection (Used to identify Sub and SPN used to deploy agent container)
+  aci_resource_group: ""                                                      # Azure Resource Group to place the deployed container
+  aci_vnet: ""                                                                # Azure Virtual Network to place the deployed container
+  aci_subnet: "azdoagent"                                                     # Azure Subnet within the VNet to place the deployed container (will try to use azdoagent as standard, by default --- Needs more work to make it dynamic)
+  aci_docker_image: xscntrlregprod.azurecr.io/ims/tools/azdoagent:base-0.1.0  # AzDO Self Hosted Agent Docker Container Image to use as an Azure Container Instance
+  aci_docker_cpu: 2                                                           # Assigned CPU resource for the AzDO Self Hosted Agent Docker Container Image to use (2 vCPUs by default)
+  aci_docker_mem: 2                                                           # Assigned Mem resource for the AzDO Self Hosted Agent Docker Container Image to use (2GB Mem by default)
+  aci_registry_user: ""                                                       # Username to pull AzDO Self Hosted Agent Docker Container Image out of the Registry
+  aci_registry_pass: ""                                                       # Password to pull AzDO Self Hosted Agent Docker Container Image out of the Registry
+  aci_vol_sub_id: ""                                                          # Azure Subscription ID where the Azure Storage account resides for mounting a volume inside the container. The SPN in the srvconnection must be able to retrieve the Storage Acct Key. Required if aci_vol_account_name is set to True. 
+  aci_vol_mount: false                                                        # Use Azure File Share mounted as a volume in the AzDO Self Hosted Agent Docker Container Image (Type: Bool, Defaults to false)
+  aci_vol_account_name: ""                                                    # The name of the Azure Storage account that contains the Azure File share. Required if aci_vol_account_name is set to True.
+  aci_vol_share_name: ""                                                      # The name of the Azure File share to be mounted as a volume in the AzDO Self Hosted Agent Docker Container Image. Required if aci_vol_account_name is set to True.
+  aci_vol_mount_path: ""                                                      # The path within the container where the azure file volume should be mounted. Must not contain colon ':'. Required if aci_vol_account_name is set to True.
+  azp_url: "https://dev.azure.com/SITA-PSE"                                   # Azure DevOps Org URL to use for registering the agent (https://dev.azure.com/<org_name> or https://sita-pse.visualstudio.com)
+  azp_agent_name: ""                                                          # Randomly generated UUID string provided from driver pipeline via library (Serves dual purpose: Name of Container in Environment and Name of the Self-Hosted Agent in the Agent Pool)
+  azp_pool: pool-ims_automation                                               # Azure DevOps Org Self-Host Agent Pool to use for registering the agent (by default, it will go to pool-ims_automation)
+  azp_token: ""                                                               # AzDO PAT string provided from driver pipeline via library
+  pipeline_failonstderr: false                                                # Specific to fail the pipeline task explicitly if any warning or errors written to stderr. Defaults to false
+
+steps:
+
+  # -
+  # - Prerequisites - Param check and install TF at the specified version
+  # -
+
+  - script: |
+      # REQUIRED PARAM: azp_agent_name
+      if [ -z "${{ parameters.azp_agent_name }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"azp_agent_name\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+ 
+      # REQUIRED PARAM: aci_resource_group
+      if [ -z "${{ parameters.aci_resource_group }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"aci_resource_group\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+
+      # REQUIRED PARAM: srvconnection
+      if [ -z "${{ parameters.srvconnection }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"srvconnection\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+    displayName: "Check 1: Required parameters for either Deploy or Destroy"
+    condition: or(${{ parameters.deploy_agent }}, ${{ parameters.destroy_agent }})
+    failOnStderr: ${{ parameters.pipeline_failonstderr }}
+
+  - script: |
+      # REQUIRED PARAM: azp_token
+      if [ -z "${{ parameters.azp_token }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"azp_token\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+
+      # REQUIRED PARAM: azp_url
+      if [ -z "${{ parameters.azp_url }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"azp_url\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+
+      # REQUIRED PARAM: aci_registry_user
+      if [ -z "${{ parameters.aci_registry_user }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"aci_registry_user\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+
+      # REQUIRED PARAM: aci_registry_pass
+      if [ -z "${{ parameters.aci_registry_pass }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"aci_registry_pass\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+
+      # REQUIRED PARAM: aci_vnet
+      if [ -z "${{ parameters.aci_vnet }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"aci_vnet\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+    displayName: "Check 2: Additional required parameters for Deploy"
+    condition: ${{ parameters.deploy_agent }}
+    failOnStderr: ${{ parameters.pipeline_failonstderr }}
+
+  - script: |
+      # REQUIRED PARAM: aci_vol_sub_id
+      if [ -z "${{ parameters.aci_vol_sub_id }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"aci_vol_sub_id\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+      
+      # REQUIRED PARAM: aci_vol_account_name
+      if [ -z "${{ parameters.aci_vol_account_name }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"aci_vol_account_name\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+ 
+      # REQUIRED PARAM: aci_vol_share_name
+      if [ -z "${{ parameters.aci_vol_share_name }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"aci_vol_share_name\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+
+      # REQUIRED PARAM: aci_vol_mount_path
+      if [ -z "${{ parameters.aci_vol_mount_path }}" ]; then
+        echo "##vso[task.logissue type=error;]Missing template parameter \"aci_vol_mount_path\""
+        echo "##vso[task.complete result=Failed;]"
+      fi
+    displayName: "Check 3: Required parameters if Mounting an Azure File Share as a Volume"
+    condition: ${{ parameters.aci_vol_mount }}
+    failOnStderr: ${{ parameters.pipeline_failonstderr }}
+
+  # -
+  # - Deploy Agent 
+  # -
+
+  - task: AzureCLI@2
+    displayName: "Deploy the Self-Hosted Agent via Azure ACI"
+    condition: and(eq('${{ parameters.deploy_agent }}', true), eq('${{ parameters.aci_vol_mount }}', false)) # this task will only run if deploy_agent is called/true, but aci_vol_mount is false
+    inputs:
+      addSpnToEnvironment: true
+      failOnStandardError: true
+      azureSubscription: "${{ parameters.srvconnection }}"
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Deploying the Self-Hosted Agent Azure ACI Instance"
+        az container create --resource-group ${{ parameters.aci_resource_group }} --vnet ${{ parameters.aci_vnet }} --subnet ${{ parameters.aci_subnet }} --name ${{ parameters.azp_agent_name }} --registry-username ${{ parameters.aci_registry_user }} --registry-password ${{ parameters.aci_registry_pass }} --image ${{ parameters.aci_docker_image }} --cpu ${{ parameters.aci_docker_cpu }} --memory ${{ parameters.aci_docker_mem }} --secure-environment-variables AZP_URL=${{ parameters.azp_url }} AZP_TOKEN=${{ parameters.azp_token }} AZP_AGENT_NAME=${{ parameters.azp_agent_name }} AZP_POOL=${{ parameters.azp_pool }}
+  
+  # - Deploy Agent with Azure File Share mounted as a volume inside image
+
+  - task: AzureCLI@2
+    displayName: "Deploy the Self-Hosted Agent via Azure ACI with Azure File Share mounted as a volume inside image"
+    condition: and(eq('${{ parameters.deploy_agent }}', true), eq('${{ parameters.aci_vol_mount }}', true)) # this task will only run if deploy_agent is called/true and aci_vol_mount is true as well
+    inputs:
+      addSpnToEnvironment: true
+      failOnStandardError: true
+      azureSubscription: "${{ parameters.srvconnection }}"
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Getting the Azure Storage Account Access Key"
+        AZURE_STORAGE_ACCT_KEY="$(az storage account keys list --subscription ${{ parameters.aci_vol_sub_id }} -n ${{ parameters.aci_vol_account_name }} --query '[0].value' -o tsv)"
+        echo "##vso[task.setvariable variable=AZURE_STORAGE_ACCT_KEY;issecret=true]${AZURE_STORAGE_ACCT_KEY}"
+        echo "Deploying the Self-Hosted Agent Azure ACI Instance"
+        az container create --resource-group ${{ parameters.aci_resource_group }} --vnet ${{ parameters.aci_vnet }} --subnet ${{ parameters.aci_subnet }} --name ${{ parameters.azp_agent_name }} --registry-username ${{ parameters.aci_registry_user }} --registry-password ${{ parameters.aci_registry_pass }} --image ${{ parameters.aci_docker_image }} --cpu ${{ parameters.aci_docker_cpu }} --memory ${{ parameters.aci_docker_mem }} --azure-file-volume-account-name ${{ parameters.aci_vol_account_name }} --azure-file-volume-share-name ${{ parameters.aci_vol_share_name }} --azure-file-volume-mount-path ${{ parameters.aci_vol_mount_path }} --azure-file-volume-account-key ${AZURE_STORAGE_ACCT_KEY} --secure-environment-variables AZP_URL=${{ parameters.azp_url }} AZP_TOKEN=${{ parameters.azp_token }} AZP_AGENT_NAME=${{ parameters.azp_agent_name }} AZP_POOL=${{ parameters.azp_pool }}
+
+  - task: AzureCLI@2
+    displayName: "Check the Deployment Status of the Self-Hosted Agent via Azure ACI"
+    condition: ${{ parameters.deploy_agent }} # this task will only run if deploy_agent is called/true
+    inputs:
+      addSpnToEnvironment: true
+      failOnStandardError: true
+      azureSubscription: "${{ parameters.srvconnection }}"
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Checking the Depyloyment Status of the Self-Hosted Agent - Grabbing Agent Logs"
+        AZDO_AGENT_STATUS="$(az container logs --name ${{ parameters.azp_agent_name }} --resource-group ${{ parameters.aci_resource_group }} | grep 'Listening for Jobs' >/dev/null ; echo $?)"
+        # Retry to Check if Agent Status shows Online or times out (timeout set to 3min00sec)
+        INCR=0 ; SLEEP_TIME=30
+        until [ ${AZDO_AGENT_STATUS} -eq '0' ] || [ ${INCR} -eq 5 ]; do
+          echo "Agent: ${{ parameters.azp_agent_name }} is not yet online"
+          sleep ${SLEEP_TIME}
+          AZDO_AGENT_STATUS="$(az container logs --name ${{ parameters.azp_agent_name }} --resource-group ${{ parameters.aci_resource_group }} | grep 'Listening for Jobs' >/dev/null ; echo $?)"
+          let INCR=${INCR}+1
+        done
+
+  # -
+  # - Destroy Agent 
+  # -
+
+  - task: AzureCLI@2
+    displayName: "Destroy the Self-Hosted Agent Azure ACI Instance"
+    condition: ${{ parameters.destroy_agent }} # this task will only run if destroy_agent is called/true
+    inputs:
+      addSpnToEnvironment: true
+      failOnStandardError: true
+      azureSubscription: "${{ parameters.srvconnection }}"
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Destroying the Self-Hosted Agent Azure ACI Instance"
+        az container delete --yes --resource-group ${{ parameters.aci_resource_group }} --name ${{ parameters.azp_agent_name }}
+        if [ $? -eq '0' ]; then
+          echo "Agent: ${{ parameters.azp_agent_name }} has been destroyed"
+        else
+          echo "Agent: ${{ parameters.azp_agent_name }} may been destroyed, please perform a manual check!"
+          echo "Debug: Return Code - $?"
+        fi
+
+  - task: PowerShell@2
+    displayName: "Delete Build Agent from Agent Pool"
+    condition: and(${{ parameters.destroy_agent }}, ne('${{ parameters.azp_url }}',''), ne('${{ parameters.azp_token }}',''), ne('${{ parameters.azp_pool }}',''), ne('${{ parameters.azp_agent_name }}','') ) # this task will only run if destroy_agent is called/true
+    inputs:
+      failOnStderr: true
+      targetType: 'inline'
+      script: |
+        $azureUrl = "${{ parameters.azp_url }}"
+        $azureDevOpsPAT = "${{ parameters.azp_token }}"
+        $pool = "${{ parameters.azp_pool }}"
+        $agent = "${{ parameters.azp_agent_name }}"
+
+        #Azure DevOps access stuff
+        $azureDevOpsAuthenicationHeader = @{Authorization = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$($azureDevOpsPAT)")) }
+        #Escape string to escaped representation (convert " " to %20)
+        $pool=[uri]::EscapeDataString($pool)
+        $agent=[uri]::EscapeDataString($agent)
+
+        ####### Get Pool ID #########
+        $poolsResource="_apis/distributedtask/pools?api-version=6.0"
+        $PoolsURL=$azureUrl + '/' + $poolsResource
+        $GetPool=Invoke-RestMethod -Uri $PoolsURL -Method Get -Headers $azureDevOpsAuthenicationHeader -ContentType 'application/json' -ErrorAction Stop
+        $poolId=($GetPool.value | Where-Object {$_.name -eq $pool}).id
+        #############################
+
+        ###### Get Agent ID #########
+        $agentsResource="_apis/distributedtask/pools/$poolId/agents?api-version=6.0"
+        $AgentsURL=$azureUrl + '/' + $agentsResource
+        $GetAgent=Invoke-RestMethod -Uri $AgentsURL -Method Get -Headers $azureDevOpsAuthenicationHeader -ContentType 'application/json' -ErrorAction Stop
+        $agentId=($GetAgent.value | Where-Object {$_.name -eq $agent}).id
+        #############################
+
+        ##### Delete this Agent #####
+        $deleteAgentsResource="_apis/distributedtask/pools/$($poolId)/agents/$($agentId)?api-version=6.0"
+        $azureRestURL= $azureUrl + '/' + $deleteAgentsResource
+        $DeletedAgentResponse=Invoke-RestMethod -Uri $azureRestURL -Method Delete -Headers $azureDevOpsAuthenicationHeader -ContentType 'application/json' -ErrorAction Stop
+        # It would have been desirable to use the $DeletedAgentResponse object to write the below however on success the result sent back by API is empty
+        Write-Output "$agent has been removed from $pool agent pool"
+        #############################
